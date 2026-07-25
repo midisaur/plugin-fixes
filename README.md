@@ -10,6 +10,34 @@ Target environment: Linux + Hyprland, `wine-d2d1-nspa-11.11` (a custom Wine
 11 tree with the d2d1 + nspa patches, hosted in `~/.local/opt/`), and the
 shared `~/.wine-ableton` prefix.
 
+## Prerequisites
+
+This repo assumes the Wine tree and prefix layout from
+[**shibco's `ableton-linux`**](https://github.com/shibco/ableton-linux).
+That project builds the d2d1 + nspa Wine 11 patches and stages them at
+`~/.local/opt/wine-d2d1-nspa-11.11/`, and provides a launcher (`ableton-linux`)
+that drives the shared `~/.wine-ableton` prefix with the right
+environment for Ableton Live and friends.
+
+Before using anything in this repo, install `ableton-linux` per its
+README and verify the launcher works for your DAW. Then this repo
+layers per-plugin-install workarounds on top of that base.
+
+**Why this matters:** the Wine tree and prefix layout from `ableton-linux`
+exist to give Ableton Live 12 a stable, graphics-patched Wine environment
+under Wayland. Most plugin installers in this repo were designed
+to run in that same environment (so the Wine version, the prefix's
+existing `vcredist`/`dotnet`/`NDI` packages, and the shared
+wineserver state are all consistent). If you use a different Wine
+build or a different prefix, the workarounds here may not apply
+unchanged — but the per-product docs call out the exact Wine-version
+sensitivity where it matters.
+
+If you don't need Ableton and just want a Wine environment for plugins,
+shibco's `ableton-linux` is still a good starting point — the Wine tree
+and prefix work fine for any Windows VST3 / standalone app. You don't
+have to actually install Ableton.
+
 ## Repo layout
 
 ```
@@ -177,8 +205,10 @@ If you need to keep plugins isolated from your DAW install, the
 
 - PikaOS 4 (Debian-based) on Ryzen 9 5900XT / 31 GB RAM
 - Hyprland 0.55.4 (Wayland)
-- Wine 11 (custom `wine-d2d1-nspa-11.11` build with d2d1 + nspa patches)
+- Wine 11 (custom `wine-d2d1-nspa-11.11` build with d2d1 + nspa patches
+  from [shibco's `ableton-linux`](https://github.com/shibco/ableton-linux))
 - Ableton Live 12 (the resident DAW in the shared prefix)
 
 Other Wayland compositors, other Wine builds, and other DAWs should
-work but haven't been verified.
+work but haven't been verified. The `ableton-linux` project's own docs
+cover the rest of the environment setup; this repo is downstream.
