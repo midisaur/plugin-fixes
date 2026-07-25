@@ -1,10 +1,9 @@
 [Desktop Entry]
 Name=iLok License Manager
 Comment=PACE License Support — authorise iLok-protected software (Wine, ableton-wine stack)
-Exec=/home/jer/.local/bin/ilok %f
+Exec=ilok %f
 Type=Application
 StartupNotify=true
-Path=/home/jer/.wine-ableton
 # Wine sets WM_CLASS to the exe filename (without .exe). MUST match exactly
 # or Hyprland cannot bind the window to layer rules — the Qt5 surface lands
 # on the unclassified default layer (fullscreen-blur shader) instead of a

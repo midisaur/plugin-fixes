@@ -98,8 +98,8 @@ msiinfo export LicenseSupport-patched.msi InstallExecuteSequence | \
 ### 4. Install the patched MSI
 
 ```sh
-export PATH=/home/jer/.local/opt/wine-d2d1-nspa-11.11/bin:$PATH
-export WINEPREFIX=/home/jer/.wine-ableton
+export PATH=$HOME/.local/opt/wine-d2d1-nspa-11.11/bin:$PATH
+export WINEPREFIX=$HOME/.wine-ableton
 export WINEDEBUG=-all
 
 wine msiexec /i /tmp/ilok-extract/LicenseSupport-patched.msi \
@@ -150,10 +150,10 @@ Create `~/.local/share/applications/ilok-license-manager.desktop`:
 [Desktop Entry]
 Name=iLok License Manager
 Comment=PACE License Support — authorise iLok-protected software
-Exec=/home/jer/.local/bin/ilok %f
+Exec=$HOME/.local/bin/ilok %f
 Type=Application
 StartupNotify=true
-Path=/home/jer/.wine-ableton
+Path=$HOME/.wine-ableton
 StartupWMClass=iLok License Manager.exe
 Categories=AudioVideo;Audio;
 ```

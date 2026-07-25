@@ -54,8 +54,8 @@ int main(int argc, char **argv) {
 EOF
 x86_64-w64-mingw32-gcc -O2 -s -o /tmp/pwsh-shim.exe /tmp/pwsh-shim.c
 
-PREFIX=/home/jer/.wine-ableton
-WT=/home/jer/.local/opt/wine-d2d1-nspa-11.11
+PREFIX=$HOME/.wine-ableton
+WT=$HOME/.local/opt/wine-d2d1-nspa-11.11
 S=/tmp/pwsh-shim.exe
 
 for f in \
@@ -83,7 +83,7 @@ that re-installs the loader stub.
 ### 3. Run the installer
 
 ```sh
-WINEPREFIX=~/.wine-ableton wine /home/jer/Downloads/Native-Access_2.exe
+WINEPREFIX=~/.wine-ableton wine $HOME/Downloads/Native-Access_2.exe
 ```
 
 Installer copies `C:\Program Files\Native Instruments\Native
