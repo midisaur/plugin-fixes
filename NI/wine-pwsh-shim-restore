@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# wine-pwsh-shim-restore — undo the powershell.exe shim patch from
+# wine-pwsh-shim-install, restoring the original Wine stub(s).
+set -euo pipefail
+
+WINE_TREE="${WINE_TREE:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
+WINEPREFIX="${WINEPREFIX:-$HOME/.wine-ableton}"
+
+restore_one() {
+    local f="$1" desc="$2"
+    if [[ -f "$f.wine-stub.bak" ]]; then
+        mv -f "$f.wine-stub.bak" "$f"
+        echo "  - $desc: restored from .wine-stub.bak"
+    else
+        echo "  - $desc: no .wine-stub.bak found (was it ever patched?)"
+    fi
+}
+
+echo "Restoring powershell.exe stubs:"
+restore_one "$WINE_TREE/lib/wine/x86_64-windows/powershell.exe" "wine-loader-64"
+restore_one "$WINEPREFIX/drive_c/windows/system32/WindowsPowerShell/v1.0/powershell.exe" "prefix-system32"
+restore_one "$WINEPREFIX/drive_c/windows/syswow64/WindowsPowerShell/v1.0/powershell.exe" "prefix-syswow64"
+
+echo
+echo "Done. powershell.exe is back to its Wine stub (will exit 0 / no-op)."

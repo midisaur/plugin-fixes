@@ -1,0 +1,200 @@
+#!/bin/bash
+# ilok-install — install PACE License Support / iLok License Manager 6.0.0
+# into the wine-ableton prefix on Wine 11.
+#
+# Background: LicenseSupport.exe from iLok.com is a 166 MB InstallShield
+# self-extractor wrapped around a WiX Burn bundle. The Burn bundle fails
+# on Wine 11 with 0x80070643 because two of its inner MSIs hit Wine bugs:
+#
+#   1. LaunchCondition
+#      "Installed Or (VersionNT64 >= 603 and COMPATIBLE_OS_VERSION="True")"
+#      Wine reports OS major version 6 (not 10), so this always fails.
+#
+#   2. InstallExecuteSequence action Wix4SchedServiceConfig_X86
+#      Calls ChangeServiceConfig2 with SERVICE_FAILURE_ACTIONS, an API
+#      Wine does not implement. Even after the launch condition is
+#      patched, Burn's wrapper sees the post-install service registration
+#      fail and rolls the MSI back.
+#
+# The fix: extract the inner LicenseSupport.msi from the InstallShield
+# SFX, patch both tables with msitools, then install the patched MSI
+# directly with msiexec (no Burn). The patched MSI install completes
+# successfully and the PACELicenseDServices service is registered.
+#
+# This script is adapted from sirsipe's ilok-pace-license-support-wine11-scripts
+# (https://github.com/sirsipe/ilok-pace-license-support-wine11-scripts).
+# Same patches, packaged as a one-shot installer that takes the path to
+# the original LicenseSupport.exe.
+#
+# Requirements:
+#   - Wine 11.x (use the d2d1-nspa-11.11 tree under
+#     ~/.local/opt/wine-d2d1-nspa-11.11/, or pass WINE_TREE=)
+#   - msitools (apt: msitools) — provides msiinfo and msibuild
+#   - cabextract (apt: cabextract)
+#   - ~280 MB of free disk space in TMPDIR (default /tmp), or use
+#     TMPDIR=/dev/shm for tmpfs.
+#
+# Usage:
+#   ilok-install ~/Downloads/LicenseSupportInstallerWin/LicenseSupport.exe
+#
+# Environment overrides:
+#   WINE_TREE=...   path to the Wine install (default ~/.local/opt/wine-d2d1-nspa-11.11)
+#   WINEPREFIX=...  Wine prefix to install into (default ~/.wine-ableton)
+#   TMPDIR=...      temporary directory (default /tmp; use /dev/shm if disk is tight)
+#   ILOK_DRY_RUN=1  extract + patch only, do not run msiexec
+
+set -eu
+
+WINE_TREE="${WINE_TREE:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
+WINEPREFIX="${WINEPREFIX:-$HOME/.wine-ableton}"
+TMPDIR="${TMPDIR:-/tmp}"
+DRY_RUN="${ILOK_DRY_RUN:-0}"
+
+usage() {
+    printf 'Usage: %s PATH_TO_LicenseSupport.exe\n' "${0##*/}" >&2
+    exit 2
+}
+fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+require_command() { command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"; }
+
+[ "$#" -eq 1 ] || usage
+for cmd in wine winepath msiinfo msibuild cabextract awk grep dirname basename mktemp rm cp mv chmod; do
+    require_command "$cmd"
+done
+
+[ -x "$WINE_TREE/bin/wine" ] || fail "Wine binary not found at $WINE_TREE/bin/wine"
+[ -d "$WINEPREFIX/drive_c/windows" ] || fail "Wine prefix not initialised: $WINEPREFIX"
+
+installer_arg="$1"
+case "$installer_arg" in
+    */*) ;;
+    *)   installer_arg="./$installer_arg" ;;
+esac
+installer_dir=$(CDPATH= cd "$(dirname "$installer_arg")" 2>/dev/null && pwd -P) \
+    || fail "Installer directory does not exist: $(dirname "$installer_arg")"
+installer_path="$installer_dir/$(basename "$installer_arg")"
+[ -f "$installer_path" ] || fail "Installer not found: $installer_arg"
+[ -r "$installer_path" ] || fail "Installer not readable: $installer_path"
+
+# Verify the file is an InstallShield SFX, not a 0-byte stub or already-patched MSI
+head_bytes=$(head -c 4 "$installer_path" | od -An -tx1 | tr -d ' \n')
+case "$head_bytes" in
+    d0cf11e0) fail "File is an MSI (OLE2), not an InstallShield SFX. Pass the original .exe from iLok.com." ;;
+    4d5a*)     : ;;   # "MZ" — InstallShield self-extractor
+    *)         fail "File is not a Windows PE / OLE2: $head_bytes" ;;
+esac
+
+export PATH="$WINE_TREE/bin:$PATH"
+export WINEPREFIX
+
+work=$(mktemp -d "$TMPDIR/ilok-install.XXXXXX") || fail "Could not create temp dir under $TMPDIR"
+cleanup() { rm -rf "$work" 2>/dev/null || :; }
+trap cleanup 0 1 2 15
+
+# 1) Extract the SFX
+extract_dir="$work/extract"
+mkdir -p "$extract_dir"
+echo "Extracting $installer_path ..."
+( cd "$extract_dir" && cabextract -q "$installer_path" ) \
+    || fail "cabextract failed — is the file a valid InstallShield SFX?"
+
+# The InstallShield SFX unpacks to a flat dir of files a0, a1, a2, a3, u0..u6.
+# The 139 MB "a3" is the PACE License Support MSI.
+[ -f "$extract_dir/a3" ] || fail "SFX extract did not contain a3 (LicenseSupport.msi)"
+[ "$(stat -c %s "$extract_dir/a3")" -gt 100000000 ] \
+    || fail "a3 is too small to be the PACE MSI — wrong SFX layout"
+cp "$extract_dir/a3" "$work/LicenseSupport.msi"
+chmod u+w "$work/LicenseSupport.msi"
+echo "  extracted: LicenseSupport.msi ($(stat -c %s "$work/LicenseSupport.msi") bytes)"
+
+# 2) Patch the two problematic tables
+echo "Patching LaunchCondition + InstallExecuteSequence ..."
+msiinfo export "$work/LicenseSupport.msi" LaunchCondition > "$work/lc.idt" \
+    || fail "msiinfo export LaunchCondition failed"
+msiinfo export "$work/LicenseSupport.msi" InstallExecuteSequence > "$work/seq.idt" \
+    || fail "msiinfo export InstallExecuteSequence failed"
+
+awk -F'\t' -v OFS='\t' '
+    NR <= 3 { print; next }
+    index($1, "COMPATIBLE_OS_VERSION") {
+        printf "  launch condition: %s -> Installed Or 1\n", $1 > "/dev/stderr"
+        $1 = "Installed Or 1"
+    }
+    { print }
+' "$work/lc.idt" > "$work/lc.patched.idt"
+
+awk -F'\t' -v OFS='\t' '
+    NR <= 3 { print; next }
+    $1 == "Wix4SchedServiceConfig_X86" {
+        printf "  %s: %s -> 0\n", $1, $2 > "/dev/stderr"
+        $2 = "0"
+    }
+    { print }
+' "$work/seq.idt" > "$work/seq.patched.idt"
+
+# Apply both patches in one transaction (avoids rewriting the full MSI twice)
+cp "$work/LicenseSupport.msi" "$work/LicenseSupport-patched.msi"
+msibuild "$work/LicenseSupport-patched.msi" -i "$work/lc.patched.idt" "$work/seq.patched.idt" \
+    || fail "msibuild failed (check free space: df -h $TMPDIR)"
+
+# Verify the rewrite took
+msiinfo export "$work/LicenseSupport-patched.msi" LaunchCondition > "$work/lc.verify" \
+    || fail "could not verify patched LaunchCondition"
+msiinfo export "$work/LicenseSupport-patched.msi" InstallExecuteSequence > "$work/seq.verify" \
+    || fail "could not verify patched InstallExecuteSequence"
+
+grep -q "Installed Or 1" "$work/lc.verify" \
+    || fail "LaunchCondition patch did not apply (expected 'Installed Or 1' in output)"
+grep -E '^Wix4SchedServiceConfig_X86\t0\t' "$work/seq.verify" > /dev/null \
+    || fail "InstallExecuteSequence patch did not apply (expected Wix4SchedServiceConfig_X86 condition = 0)"
+
+# Drop a copy of the patched MSI next to the original installer for re-runs
+patched_copy="$installer_dir/LicenseSupport-patched.msi"
+cp "$work/LicenseSupport-patched.msi" "$patched_copy"
+chmod u+w "$patched_copy"
+echo "  patched MSI: $patched_copy"
+
+if [ "$DRY_RUN" = "1" ]; then
+    echo
+    echo "Dry run — skipping msiexec. Patched MSI at:"
+    echo "  $patched_copy"
+    exit 0
+fi
+
+# 3) Install the patched MSI with msiexec (no Burn wrapper)
+install_log="$work/install.log"
+echo
+echo "Installing patched MSI (verbose log at $install_log) ..."
+"$WINE_TREE/bin/wine" msiexec /i "$work/LicenseSupport-patched.msi" \
+    BURNMSIINSTALL=1 /L*v "$install_log" /q \
+    || fail "msiexec failed. Check the log: $install_log"
+
+# 4) Verify
+echo
+echo "Verification:"
+if "$WINE_TREE/bin/wine" sc query PACELicenseDServices 2>&1 | grep -qi RUNNING; then
+    echo "  PACELicenseDServices  RUNNING"
+else
+    echo "  PACELicenseDServices  NOT RUNNING (check $install_log)"
+    exit 1
+fi
+if "$WINE_TREE/bin/wine" reg query 'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\{A292CF9D-6241-4ADA-AEF7-4340174E7F8B}' >/dev/null 2>&1; then
+    echo "  MSI registration      PRESENT"
+else
+    echo "  MSI registration      MISSING (check $install_log)"
+    exit 1
+fi
+if "$WINE_TREE/bin/wine" tasklist 2>/dev/null | grep -q LDSvc; then
+    echo "  LDSvc.exe process     RUNNING"
+else
+    echo "  LDSvc.exe process     NOT FOUND (service may still be starting)"
+fi
+echo
+echo "PACE License Support installed successfully."
+echo
+echo "Install the launcher + .desktop file for GUI access:"
+echo "  cp $WINE_TREE/../iLok-License-Manager-Wine-Scripts/ilok ~/.local/bin/"
+echo "  cp $WINE_TREE/../iLok-License-Manager-Wine-Scripts/ilok-license-manager.desktop ~/.local/share/applications/"
+echo "  update-desktop-database ~/.local/share/applications/"
+echo
+echo "Then launch from the application menu (or: gtk-launch ilok-license-manager)."

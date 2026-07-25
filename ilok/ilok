@@ -1,0 +1,23 @@
+#!/bin/bash
+# Launch iLok License Manager in the wine-ableton prefix.
+# Mirrors the env that ableton-live and native-access set: same Wine tree,
+# same prefix, same D3D knobs. iLok License Manager is a Qt5 app, so the
+# CSMT/forced-redraw flags the rest of the prefix uses also keep Hyprland
+# from misclassifying its window onto the unclassified default layer
+# (which on this setup is the fullscreen-blur shader).
+#
+# Why this is needed at all: the PACE iLok License Manager 6.x installer
+# fails in Wine 11 with 0x80070643 because of two MSI table entries that
+# hit unimplemented Wine APIs. Use the ilok-install script to install;
+# this script just launches the GUI.
+set -u
+unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
+WINE_ROOT="${ILOK_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
+export WINEPREFIX="${ILOK_WINEPREFIX:-$HOME/.wine-ableton}"
+export PATH="$WINE_ROOT/bin:$PATH"
+export WINEDEBUG="${WINEDEBUG:--all}"
+export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
+export WINED3D_DCOMP_FORCE_FULL_REDRAW="${WINED3D_DCOMP_FORCE_FULL_REDRAW:-1}"
+export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
+export WINESERVER="$WINE_ROOT/bin/wineserver"
+exec wine "C:\Program Files\iLok License Manager\iLok License Manager.exe" "$@"

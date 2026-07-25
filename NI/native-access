@@ -1,0 +1,31 @@
+#!/bin/bash
+# Launch Native Access 2 in the wine-ableton prefix.
+# Mirrors the env that ableton-live and ilok set: same Wine tree, same prefix,
+# same D3D knobs. NA2 is an Electron app (Chromium-based, vulkan/vkd3d under the
+# hood), so it benefits from the same CSMT/forced-redraw flags the rest of the
+# prefix uses to avoid the Hyprland fullscreen-blur misclassification pitfall.
+#
+# NTKDaemon must be running before NA starts, otherwise NA's first-run
+# check fails ("can't determine daemon version" / "Please grant permission
+# to install dependencies"). Wine has no UAC, so NA's elevate.exe + UAC
+# path for installing the daemon silently fails. The fix: start the
+# already-registered NTKDaemonService via `wine sc start` before launching
+# NA, and leave it running in the background after NA exits (so the next
+# launch is fast).
+set -u
+unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
+WINE_ROOT="${NATIVE_ACCESS_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
+export WINEPREFIX="${NATIVE_ACCESS_WINEPREFIX:-$HOME/.wine-ableton}"
+export PATH="$WINE_ROOT/bin:$PATH"
+export WINEDEBUG="${WINEDEBUG:--all}"
+export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
+export WINED3D_DCOMP_FORCE_FULL_REDRAW="${WINED3D_DCOMP_FORCE_FULL_REDRAW:-1}"
+export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
+export WINESERVER="$WINE_ROOT/bin/wineserver"
+
+# Make sure the NTKDaemon Windows service is running. The installer
+# (NTKDaemon 1.31.1 Setup PC.exe) registers the service; we just start it.
+# If it's already running, this is a no-op.
+"$WINE_ROOT/bin/wine" sc start NTKDaemonService >/dev/null 2>&1 || true
+
+exec wine "C:\\Program Files\\Native Instruments\\Native Access\\Native Access.exe" "$@"
