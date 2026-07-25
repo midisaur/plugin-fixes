@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# kontakt-install — manually install Kontakt 8 Player VST3 in the
+# wine-ableton prefix on Wine 11.
+#
+# Background: Kontakt 8.11.1 Setup PC.exe is an InstallAware + InstallScript
+# bundle that launches a vcredist_x64.exe prereq (vc_redist 14.32.31332)
+# from its OFFLINE payload. Wine already has vcredist 14.44.35211
+# installed, so the vcredist bundle refuses to downgrade and exits
+# 0x666. The InstallScript wrapper then returns exit 1 to NA, which
+# marks the install as failed even though the file copy hadn't started
+# yet — the Kontakt 8 application and VST3 are never copied to disk.
+#
+# Most NI products (Battery 4, Komplete Kontrol, Massive X, etc.) do
+# NOT have this problem and install cleanly through NA. Kontakt 8 is
+# the exception. This script bypasses the broken wrapper by:
+#   1. Finding the vst3 in the OFFLINE payload (left there by a
+#      previous failed install attempt — NA's wrapper extracts it to a
+#      temp dir before the vcredist check).
+#   2. Copying the VST3 to the standard Windows VST3 location.
+#   3. Writing the HKLM\SOFTWARE\Native Instruments\Kontakt 8 registry
+#      key so the NTKDaemon's product scan recognizes the install.
+#   4. Writing the installed_products JSON marker.
+#   5. Restarting NTKDaemonService to trigger a re-scan and activation.
+#
+# Requirements:
+#   - Wine 11.x (use the d2d1-nspa-11.11 tree under
+#     ~/.local/opt/wine-d2d1-nspa-11.11/, or pass WINE_TREE=)
+#   - At least one previous failed NA install of Kontakt 8 (so the
+#     OFFLINE payload is extracted somewhere in TEMP). If not, run
+#     `kontakt-install --download` to trigger the NA install once
+#     and let it fail; the payload stays in the temp dir for ~hours
+#     after the failure.
+#   - NTKDaemon already installed and sc-runnable (see
+#     Native-Access-Wine-Install.md step 4).
+#
+# Usage:
+#   kontakt-install                  # auto-detect the most recent
+#                                    # extracted Kontakt 8 payload
+#   kontakt-install --download       # trigger NA install of Kontakt 8
+#                                    # (waits for the vcredist-induced
+#                                    # failure, then proceeds)
+#   kontakt-install --from TEMPDIR   # specify a known extract dir like
+#                                    # /path/to/wine/drive_c/users/.../AppData/Local/Temp/miaXXXX.tmp
+#
+# Environment overrides:
+#   WINE_TREE=...   path to the Wine install (default ~/.local/opt/wine-d2d1-nspa-11.11)
+#   WINEPREFIX=...  Wine prefix to install into (default ~/.wine-ableton)
+
+set -eu
+
+WINE_TREE="${WINE_TREE:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
+WINEPREFIX="${WINEPREFIX:-$HOME/.wine-ableton}"
+WINE="$WINE_TREE/bin/wine"
+
+# Convert POSIX path to Windows path for Wine
+to_win() {
+    local p="${1#/}"
+    echo "Z:\\${p//\//\\}"
+}
+
+# Check prerequisites
+[[ -x "$WINE" ]] || { echo "WINE not found: $WINE" >&2; exit 1; }
+[[ -d "$WINEPREFIX" ]] || { echo "WINEPREFIX not found: $WINEPREFIX" >&2; exit 1; }
+command -v ss >/dev/null || { echo "ss(8) not found (apt: iproute2)" >&2; exit 1; }
+
+# Step 1: find the OFFLINE payload
+TEMP_BASE="$WINEPREFIX/drive_c/users/jer/AppData/Local/Temp"
+VST3_SRC=""
+
+if [[ "${1:-}" == "--from" && -n "${2:-}" ]]; then
+    # User-specified temp dir
+    VST3_SRC=$(find "$2" -name 'Kontakt 8.vst3' -type f 2>/dev/null | head -1)
+elif [[ "${1:-}" == "--download" ]]; then
+    echo "==> Triggering NA download of Kontakt 8 (will fail at vcredist, payload stays in temp)"
+    echo "    Use NA to click Install on Kontakt 8 Player."
+    echo "    Wait until NA reports 'Installation failed' or the wrapper process exits."
+    echo "    Then re-run this script WITHOUT --download to finish the install."
+    echo ""
+    echo "    Alternatively, you can monitor manually with:"
+    echo "      watch -n 5 \"ps -ef | grep -i kontakt | grep -v grep\""
+    exit 0
+else
+    # Auto-detect: most recent miaXXXX.tmp dir that contains Kontakt 8.vst3
+    for dir in $(ls -1dt "$TEMP_BASE"/mia*.tmp 2>/dev/null | head -5); do
+        VST3_SRC=$(find "$dir" -name 'Kontakt 8.vst3' -type f 2>/dev/null | head -1)
+        [[ -n "$VST3_SRC" ]] && break
+    done
+fi
+
+if [[ -z "$VST3_SRC" || ! -f "$VST3_SRC" ]]; then
+    echo "No Kontakt 8.vst3 found in $TEMP_BASE/mia*.tmp" >&2
+    echo "" >&2
+    echo "If you haven't run an install attempt yet, run with --download to" >&2
+    echo "trigger one, then re-run this script." >&2
+    exit 1
+fi
+
+echo "==> Found vst3: $VST3_SRC"
+VST3_SIZE=$(stat -c%s "$VST3_SRC")
+echo "    Size: $((VST3_SIZE / 1024 / 1024)) MB"
+
+# Step 2: copy to standard VST3 location
+VST3_DST_DIR="$WINEPREFIX/drive_c/Program Files/Common Files/VST3"
+VST3_DST="$VST3_DST_DIR/Kontakt 8.vst3"
+mkdir -p "$VST3_DST_DIR"
+if [[ -f "$VST3_DST" ]] && [[ "$(stat -c%s "$VST3_DST")" == "$VST3_SIZE" ]]; then
+    echo "==> VST3 already in place: $VST3_DST"
+else
+    cp "$VST3_SRC" "$VST3_DST"
+    echo "==> Copied VST3 to: $VST3_DST"
+fi
+
+# Step 3: write registry key for HKLM\SOFTWARE\Native Instruments\Kontakt 8
+echo "==> Writing registry: HKLM\\SOFTWARE\\Native Instruments\\Kontakt 8"
+WINEPREFIX="$WINEPREFIX" "$WINE" reg add 'HKLM\SOFTWARE\Native Instruments\Kontakt 8' \
+    /v InstallVST64Dir /d 'C:\Program Files\Common Files\VST3' /f >/dev/null
+WINEPREFIX="$WINEPREFIX" "$WINE" reg add 'HKLM\SOFTWARE\Native Instruments\Kontakt 8' \
+    /v Version /d '8.11.1' /f >/dev/null
+
+# Step 4: write installed_products JSON marker
+JSON_DIR="$WINEPREFIX/drive_c/users/Public/Documents/Native Instruments/installed_products"
+mkdir -p "$JSON_DIR"
+JSON_PATH="$JSON_DIR/Kontakt 8.json"
+cat > "$JSON_PATH" <<'EOF'
+{"InstallVST64Dir":"C:\\Program Files\\Common Files\\VST3","Version":"8.11.1","VST3Path":"C:\\Program Files\\Common Files\\VST3\\Kontakt 8.vst3"}
+EOF
+echo "==> Wrote JSON marker: $JSON_PATH"
+
+# Step 5: restart NTKDaemon to trigger re-scan and activation
+echo "==> Restarting NTKDaemonService"
+WINEPREFIX="$WINEPREFIX" "$WINE" sc stop NTKDaemonService 2>&1 | tail -1 || true
+sleep 3
+WINEPREFIX="$WINEPREFIX" "$WINE" sc start NTKDaemonService 2>&1 | tail -1
+
+# Wait for re-scan + port to be published
+# (the wineserver needs a moment after `sc start` to publish the
+# listening sockets to the kernel — checking immediately races)
+echo "==> Waiting for product re-scan (up to 30s)..."
+for i in {1..30}; do
+    if WINEPREFIX="$WINEPREFIX" "$WINE" sc query NTKDaemonService 2>&1 | grep -q "STATE.*: 4  RUNNING"; then
+        # Service says running — but the listening socket may not be
+        # published yet. Wait up to 10s more for port 5146 to appear.
+        for j in {1..10}; do
+            if ss -tln 2>/dev/null | awk '$4 ~ /:5146$/ {found=1} END {exit !found}'; then
+                break 2
+            fi
+            sleep 1
+        done
+        break
+    fi
+    sleep 1
+done
+
+# Verify
+echo ""
+echo "==> Verification"
+echo "    VST3:  $(ls -la "$VST3_DST" | awk '{print $5, $9}')"
+echo "    Reg:   $(WINEPREFIX="$WINEPREFIX" "$WINE" reg query 'HKLM\SOFTWARE\Native Instruments\Kontakt 8' 2>&1 | grep InstallVST64Dir | tr -d '\r')"
+echo "    JSON:  $JSON_PATH"
+echo "    Port:  $(ss -tln 2>/dev/null | awk '/:5146 / {print "5146 LISTEN"; found=1} END {if (!found) print "5146 NOT LISTEN"}')"
+echo ""
+echo "Open Native Access; Kontakt 8 Player should show as Installed."
+echo "Activation JWT is written to: drive_c/users/Public/Documents/Native Instruments/Native Access/ras3/<UPID>.jwt"

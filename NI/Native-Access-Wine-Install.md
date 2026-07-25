@@ -116,6 +116,25 @@ WINEPREFIX=~/.wine-ableton wine \
     "$PREFIX/drive_c/Program Files/Native Instruments/Native Access/resources/daemon/win/NTKDaemon 1.31.1 Setup PC.exe"
 ```
 
+### 5. Install plugins through NA
+
+Once NA launches successfully and you can log in, install plugins
+normally through the NA UI. **Most NI plugins install cleanly** on
+this Wine prefix — Battery 4, Komplete Kontrol, Massive X, FM8,
+Reaktor, etc. all complete the install in ~1 minute, exit 0 or 100,
+and get auto-activated by NTKDaemon.
+
+**One exception:** Kontakt 8 Player's installer bundles an older
+`vcredist_x64.exe` (vc_redist 14.32) that conflicts with the
+vcredist 14.44 already installed. The bundle exits 0x666, the
+wrapper returns 1 to NA, and the install fails. The Kontakt Factory
+Selection content library still installs in the same run (it's a
+sub-product extracted before the vcredist check).
+
+For Kontakt 8 Player, use the manual fix in
+`Kontakt-8-Wine-Install.md` + the `kontakt-install` script (VST3
++ activation; standalone not needed).
+
 ## Verification
 
 | Check | Expected |
