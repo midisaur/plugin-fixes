@@ -1,17 +1,35 @@
 #!/bin/bash
 # Launch Native Access 2 in the wine-ableton prefix.
-# Mirrors the env that ableton-live and ilok set: same Wine tree, same prefix,
-# same D3D knobs. NA2 is an Electron app (Chromium-based, vulkan/vkd3d under the
-# hood), so it benefits from the same CSMT/forced-redraw flags the rest of the
-# prefix uses to avoid the Hyprland fullscreen-blur misclassification pitfall.
 #
-# NTKDaemon must be running before NA starts, otherwise NA's first-run
-# check fails ("can't determine daemon version" / "Please grant permission
-# to install dependencies"). Wine has no UAC, so NA's elevate.exe + UAC
-# path for installing the daemon silently fails. The fix: start the
-# already-registered NTKDaemonService via `wine sc start` before launching
-# NA, and leave it running in the background after NA exits (so the next
-# launch is fast).
+# Two things in sequence:
+#   1. wine sc start NTKDaemonService — start the bundled NTKDaemon
+#      Windows service so NA's first-launch dep check can find it
+#      over ZMQ (NAT's IPC port). If the service is already running
+#      from a previous launch, this is a no-op.
+#   2. exec wine "C:\Program Files\Native Instruments\Native
+#      Access\Native Access.exe" — NA in the foreground. The script
+#      stays alive for the duration of the NA session; exit code 0
+#      when NA closes.
+#
+# Without step 1, NA sits on the "Please grant permission to install
+# dependencies" dep screen on first launch (Wine has no UAC and the
+# bundled Inno Setup installer's `elevate.exe` wrapper silently
+# fails). With step 1, NA's ZMQ check finds the daemon and the
+# library loads normally.
+#
+# The bundled Inno Setup installer (`NTKDaemon 1.31.1 Setup PC.exe`
+# inside `resources/daemon/win/` inside the NA bundle) registers
+# `NTKDaemonService` once. After that, repeated `native-access`
+# launches reuse the same service.
+#
+# Env vars set for NA's Electron renderer under Wayland match the
+# rest of the wine-ableton stack (Ableton, ILok, etc.) so the same
+# graphics patches (D2D1, NSPA, CSMT, vkd3d) apply consistently.
+#
+# Override the prefix:
+#   NATIVE_ACCESS_WINEPREFIX=/path/to/other/prefix native-access
+# Override the Wine tree:
+#   NATIVE_ACCESS_WINE_ROOT=/path/to/wine-d2d1-nspa-11.11 native-access
 set -u
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
 WINE_ROOT="${NATIVE_ACCESS_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
@@ -23,9 +41,13 @@ export WINED3D_DCOMP_FORCE_FULL_REDRAW="${WINED3D_DCOMP_FORCE_FULL_REDRAW:-1}"
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
 
-# Make sure the NTKDaemon Windows service is running. The installer
-# (NTKDaemon 1.31.1 Setup PC.exe) registers the service; we just start it.
-# If it's already running, this is a no-op.
+# Start NTKDaemon if it isn't running yet. The `sc start` is silent
+# (output goes to /dev/null) because `sc start` itself does not block
+# on the service actually coming up — it returns as soon as the SCM
+# accepts the start request. The 2-second sleep gives the service
+# time to bind ZMQ ports before NA's first-launch daemonVersionRequest
+# fires (otherwise NA hits a transient timeout at the dep screen).
 "$WINE_ROOT/bin/wine" sc start NTKDaemonService >/dev/null 2>&1 || true
+sleep 2
 
 exec wine "C:\\Program Files\\Native Instruments\\Native Access\\Native Access.exe" "$@"
