@@ -7,20 +7,38 @@ Target: `~/.wine-ableton` prefix on PikaOS 4 / Hyprland, wine-d2d1-nspa-11.11
 ## What's wrong with the unmodified installer
 
 `LicenseSupport.exe` from iLok.com is a 166 MB InstallShield self-extractor
-wrapped around a WiX Burn bundle. The Burn bundle fails on Wine 11 with
-`0x80070643` because two of its inner MSIs are incompatible with Wine:
+wrapped around a WiX Burn bundle with 4 embedded payloads
+(`Bonjour64.msi`, `VC_redist.x86.exe`, `VC_redist.x64.exe`,
+`LicenseSupport.msi`). The bundle fails on Wine 11 in two layers:
 
-1. The Windows-10 launch condition
-   `Installed Or (VersionNT64 >= 603 and COMPATIBLE_OS_VERSION="True")`
-   evaluates false in Wine (Wine reports OS version 6).
-2. The `Wix4SchedServiceConfig_X86` action calls
-   `ChangeServiceConfig2` with the `SERVICE_FAILURE_ACTIONS` flag,
-   an API Wine does not implement.
+1. **Burn layer (proximate cause).** Burn fails to create its UI thread
+   window early in the install flow, with `0x80004005: Failed to create
+   Burn UI thread window`. After five retry attempts in a row, it gives
+   up and rolls back. Bundle logs end up at
+   `C:\users\jer\AppData\Local\Temp\PACE_License_Support_*.log`. Note
+   Burn's `RollbackBoundary` guarantees the cache is wiped on failure,
+   so the inner MSI is never left in
+   `drive_c/ProgramData/Package Cache/{A292CF9D-...}`.
 
-The bundle's own logs show `Action ended ... INSTALL. Return value 0` for
-every visible action, then Burn returns `0x80070643` and rolls everything
-back. The MSI's `InstallFiles`, `RegisterProduct`, and service-install
-actions never actually run.
+2. **MSI layer (after Burn bypass).** Once Burn is bypassed (see step 2)
+   and the inner `LicenseSupport.msi` is extracted directly from the
+   InstallShield SFX, two MSI tables are still incompatible with Wine:
+
+   1. The Windows-10 launch condition
+      `Installed Or (VersionNT64 >= 603 and COMPATIBLE_OS_VERSION="True")`
+      evaluates false in Wine. Wine does report `VersionNT64=603`, but
+      `COMPATIBLE_OS_VERSION` is set by a Burn CustomAction (we bypassed
+      Burn), so the property is empty and the condition evaluates false.
+   2. The `Wix4SchedServiceConfig_X86` action calls
+      `ChangeServiceConfig2` with the `SERVICE_FAILURE_ACTIONS` flag
+      via WiX's managed code helper, an API Wine does not fully
+      implement. The CallCustomAction step returns 1603.
+
+**The earlier version of this doc claimed `0x80070643` was the proximate
+failure — that is what Burn *reports* after rollback, but the actual
+earlier failure is `0x80004005` from the UI thread. The two MSI patch
+steps (b and c below) are still necessary; they fix different layers
+than the initial UI failure.**
 
 ## The fix (5 steps)
 
@@ -208,3 +226,82 @@ https://github.com/sirsipe/ilok-pace-license-support-wine11-scripts
 The install.sh / extract-license-support-msi.sh / patch-license-support-msi.sh
 scripts there automate the bundle cache interception, MSI patch, and
 install, but the patches are exactly the two awk edits in step 3.
+
+## Verified by scratch-prefix repro on 2026-07-27
+
+This procedure was tested against a clean Wine prefix matching the
+ableton prefix's Wine-level state (registry, drive_c/windows,
+system32/syswow64, Microsoft.NET) without the 100 GB of installed
+plugin content — `~/.wine-ableton-testing`, a 863 MB functional twin
+created via `cp -a ~/.wine-ableton ~/.wine-ableton-testing` followed by
+removing only the directories that hold user-installed apps
+(`drive_c/users/jer`, `drive_c/users/Public/Documents/*Library*`,
+`drive_c/Program Files/{Native Instruments,Arturia,iLok License Manager,
+VstPlugins,Common Files/{VST3,PACE}}`,
+`drive_c/Program Files (x86)/Common Files/{Avid,Native Instruments}`,
+`drive_c/ProgramData/{Ableton,Apple,Bome Software,iZotope,Max 9,
+Native Instruments,Neural DSP,PACE,PACEAntiPiracy,XLN Audio,
+Microsoft}`) plus the stale `NI*`, `PACE*` service registrations.
+
+What worked against the scratch prefix:
+
+- **Step 2 (extract the inner MSI from `a3`).** The InstallShield SFX
+  unpacks to `a0` (Bonjour.msi), `a1` (VC_redist.x86.exe),
+  `a2` (VC_redist.x64.exe), `a3` (LicenseSupport.msi, 139 MB), and
+  `u0`-`u6` (Burn UX assets). `a3` is a real MSI file
+  (`Composite Document File V2 Document, MSI Installer, Created by
+  WiX Toolset 5.0.2.0, for PACE License Support` — same MSI as sirsipe
+  extracts from Burn's package cache).
+- **Step 3 (both patches).** Both patches apply cleanly: `LaunchCondition`
+  → `Installed Or 1` and `Wix4SchedServiceConfig_X86` → `0`. **The
+  LaunchCondition patch is necessary** — without it the install halts at
+  the `LaunchConditions` action with return value 1, which is MSI-speak
+  for "condition evaluated false." With both patches the install runs
+  past LaunchConditions.
+
+What did NOT work against the scratch prefix:
+
+- **Step 4 (file copy).** `wine msiexec /i LicenseSupport-patched.msi
+  BURNMSIINSTALL=1 /qb /L*v log.log` reported "Return value 1" for all 72
+  install actions and exit 0, but the log shows MSI internal actions
+  like `InstallFiles`, `RegisterProduct`, `InstallServices`,
+  `StartServices` completing without errors while **no files were
+  actually copied to disk**. The MSI's bundled CAB stream (~1.5 GB
+  compressed, decompresses to ~2.5 GB including the 712 MB `LDSvc.exe`)
+  was never extracted. Wine's msiexec does not natively run WiX
+  DTF (Deployment Tools Foundation) managed-code CustomActions that
+  handle the file copy logic; the `[SchedServiceConfig...]` payload
+  inside the InstallExecuteSequence is a binary struct that Wine's
+  scheduler can't deserialize.
+
+What happened on the working `~/.wine-ableton` prefix (with full app
+content), as it was at the time of original install:
+
+- `LDSvc.exe` (712,628,064 bytes) exists at
+  `C:\Program Files (x86)\Common Files\PACE\Services\LicenseServices\`.
+  Its ctime is the install timestamp; its mtime is the binary's source
+  date, meaning the file was extracted to disk during the install but
+  not modified afterward. `InstallLocation` in the registry's Uninstall
+  entry is **empty** — same empty value the scratch-prefix install
+  produces.
+
+This **suggests the working prefix's iLok install completed via a
+different code path** than the patched-MSI bypass documented above. Two
+plausible explanations, neither confirmed:
+
+1. The patched MSI install eventually succeeded for file copy in a
+   state we did not reproduce (e.g. it required a fully populated
+   `users/jer` directory or prior Wine-mono state we did not create
+   in the scratch prefix). A specific missing piece cannot be
+   identified without further instrumentation.
+2. The PACE install was actually completed by an earlier run, before
+   the current `~/.wine-ableton` state was captured. The LDSvc.exe is
+   from that earlier run, and the registry metadata + service
+   registration that we did verify are exactly what the bypass flow
+   produces.
+
+In either case: **the `ilok-install` script in this repo is known to
+produce a PACE License Support registry entry + service registration.
+Whether it consistently produces a working installation with all
+files in place depends on Wine-prefix state that this fix does not
+fully control.**

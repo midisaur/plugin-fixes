@@ -10,6 +10,22 @@ Target environment: Linux + Hyprland, `wine-d2d1-nspa-11.11` (a custom Wine
 11 tree with the d2d1 + nspa patches, hosted in `~/.local/opt/`), and the
 shared `~/.wine-ableton` prefix.
 
+## Scope: install-time patches, not Wine shims
+
+Every fix in this repo is an **install-time patch applied to a Windows
+installer bundle** (MSI table edits with `msibuild`, LDIF registry
+imports, `wine sc create` service registrations, extraction of files from
+`InstallShield SFX` / `Inno Setup` / `InstallAware` wrappers), combined
+with a launcher script that sets the right `WINEPREFIX`, `WINEDEBUG`,
+and Wine tree.
+
+**We do not ship Wine DLL shims, loader overrides (`DllOverrides`
+registry entries that redirect builtin → native binary), or any
+modification to the on-disk Wine tree.** Those techniques fix narrow
+symptoms at the cost of breaking unrelated apps in the same prefix, and
+they don't compose across products. Install-time patches + a good
+launcher cover the same problems without the foot-guns.
+
 ## Prerequisites
 
 This repo assumes the Wine tree and prefix layout from
@@ -46,8 +62,6 @@ plugin-fixes/
 ├── NI/                             # Native Instruments / Native Access
 │   ├── Native-Access-Wine-Install.md
 │   ├── Kontakt-8-Wine-Install.md
-│   ├── wine-pwsh-shim-install
-│   ├── wine-pwsh-shim-restore
 │   ├── native-access               # launcher
 │   └── kontakt-install
 └── <vendor>/                       # one dir per vendor
@@ -94,8 +108,7 @@ errors and Ctrl-C if it hangs.
 For installers that are wrapped in a portal app (Native Access, iLok
 License Manager, plugin managers that need to stay running, etc.), see
 the per-vendor doc — those usually need an additional step like starting
-a service before launching the app, or have their own NA-style dep loop
-that needs to be shimmed.
+a service before launching the app.
 
 ## Quick reference: launching a product after install
 
@@ -125,10 +138,17 @@ incompatibility. The pattern is:
    after the failure (most NI InstallAware + InstallScript bundles extract
    the actual files to a temp dir before they fail on a prereq check).
 3. Identify the missing piece (a service registration, a vcredist bundle
-   that conflicts, a powershell shim, a launch condition referencing
-   `VersionNT64`).
+   that conflicts, a launch condition referencing `VersionNT64`, files
+   that need extracting from a wrapped installer bundle, etc.).
 4. Document the issue and the fix in `<vendor>/<product>/<product>-Wine-Install.md`,
-   and package the fix as a `<product>-install` script.
+   and package the fix as a `<product>-install` script. Typical fixes
+   are install-time patches (MSI table edits with `msibuild`, LDIF
+   registry imports, `wine sc create` service registrations, extraction
+   of files from `InstallShield SFX`/`Inno Setup`/`InstallAware` bundles)
+   combined with a known-good Wine tree/prefix combo from
+   `ableton-linux`. **No Wine DLL shims, no loader overrides, no
+   on-disk Wine-tree modifications** — those fix narrow symptoms and
+   break other apps, and we steer clear of them.
 5. Verify: re-run the install, check the product is detected by your
    portal app (if any), and check the plugin is found by your DAW.
 
@@ -136,12 +156,11 @@ incompatibility. The pattern is:
 
 - **`NI/`** — Native Instruments / Native Access 2
   - **`Native-Access-Wine-Install.md`** — install NA 2 in the ableton-wine
-    prefix. Patches Wine's `powershell.exe` builtin stub (NA's NSIS
-    installer preflights via powershell and the stub always-exits-0,
-    so the installer loops forever on "Native Access is running").
-    Then registers `NTKDaemonService` and starts it before launching NA,
-    so NA's first-run ZMQ check finds the daemon and skips the
-    "Please grant permission to install dependencies" screen.
+    prefix. The NSIS installer runs through to completion under
+    `wine-d2d1-nspa-11.11`; the only real obstacle is NA's first-run
+    dep screen, which is fixed by registering `NTKDaemonService` via
+    the bundled Inno Setup installer and starting the service before
+    launching NA.
   - **`Kontakt-8-Wine-Install.md` + `kontakt-install`** — manual fix for
     Kontakt 8 Player (Kontakt 8.11.1 bundles `vcredist_x64.exe` 14.32
     which conflicts with the vcredist 14.44 already installed, so its
@@ -150,9 +169,6 @@ incompatibility. The pattern is:
     and restarts NTKDaemon to trigger activation. Most other NI
     products (Battery 4, Massive X, Komplete Kontrol, FM8, Reaktor) do
     NOT need this and install cleanly through NA.
-  - **`wine-pwsh-shim-install` / `wine-pwsh-shim-restore`** — patch/unpatch
-    the powershell stubs. Idempotent. Run `wine-pwsh-shim-install` once
-    per Wine tree build, after any `wine-d2d1-nspa-11.11` update.
   - **`native-access`** — NA launcher used by the `.desktop` file.
     Starts the NTKDaemon service before exec'ing the app.
 
